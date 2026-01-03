@@ -1,7 +1,14 @@
+"""Training script for PRX models using Composer and Hydra.
+
+This module provides the main training loop and utilities for training diffusion models
+with MosaicML Composer framework. It handles distributed training setup, optimizer
+configuration, algorithm registration, and model compilation.
+"""
 
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Dict, List, Union
+import importlib
 
 import hydra
 import streaming
@@ -19,21 +26,49 @@ from seed_utils import set_seeds
 
 
 def clean_up_mosaic() -> None:
-    """Clean up stale shared memory segments used by MosaicML Streaming."""
+    """Clean up stale shared memory segments used by MosaicML Streaming.
+
+    This ensures node stability and prevents potential conflicts or resource leaks
+    from stale shared memory segments.
+    """
     print(
-        " > MosaicML: initiating cleanup of stale shared memory segments used by MosaicML Streaming. This is to ensure node stability and prevent potential conflicts or resource leaks."
+        " > MosaicML: Initiating cleanup of stale shared memory segments. "
+        "This ensures node stability and prevents potential resource leaks."
     )
     streaming.base.util.clean_stale_shared_memory()
+
+
+def _resolve_torch_optimizer(target: str):
+    # Accept "AdamW" or "torch.optim.AdamW"
+    if "." not in target:
+        return getattr(torch.optim, target)
+
+    module_path, cls_name = target.rsplit(".", 1)
+    module = importlib.import_module(module_path)
+    return getattr(module, cls_name)
 
 
 def create_optimizer(
     model: torch.nn.Module,
     optimiser_config: dict[str, Any],
 ) -> torch.optim.Optimizer:
+    """Create an optimizer with optional parameter filtering.
+
+    Args:
+        model: The model to optimize
+        optimiser_config: Optimizer configuration dict with optional filters:
+            - parameter_name_filter: Only train params containing these strings
+            - parameter_freeze_name_filter: Freeze params containing these strings
+            - _target_: Optimizer class (e.g., torch.optim.AdamW)
+
+    Returns:
+        Configured optimizer instance
+    """
     key_name_filter = optimiser_config.pop("parameter_name_filter", None)
     freeze_name_filter = optimiser_config.pop("parameter_freeze_name_filter", None)
 
     def selected(name: str) -> bool:
+        """Check if parameter should be trainable based on name filters."""
         if key_name_filter and not any(k in name for k in key_name_filter):
             return False
         if freeze_name_filter and any(k in name for k in freeze_name_filter):
@@ -46,21 +81,22 @@ def create_optimizer(
         print("Trainable parameters:")
         print("\n".join(n for n, _ in trainable))
 
-    print(f"-> # layers to train: {len(trainable)}")
-    print(f"-> # params to train: {sum(p.numel() for _, p in trainable):_}")
+    print(f"-> Layers to train: {len(trainable)}")
+    print(f"-> Parameters to train: {sum(p.numel() for _, p in trainable):_}")
 
-    opt_class = optimiser_config.pop("_target_")  # e.g. torch.optim.AdamW (class)
+    opt_target = optimiser_config.pop("_target_")  # likely "torch.optim.AdamW"
+    opt_class = _resolve_torch_optimizer(opt_target) if isinstance(opt_target, str) else opt_target
+
     return opt_class(params=[p for _, p in trainable], **optimiser_config)
 
 
 def train(config: DictConfig) -> None:
-    """Train a model.
+    """Train a model using Composer framework.
 
     Args:
-        config (DictConfig): Configuration composed by Hydra
-    Returns:
-        Optional[float]: Metric score for hyperparameter optimization
+        config: Hydra configuration containing model, dataset, trainer, and algorithm settings
     """
+    # Initialize distributed training
     global_destroy_dist = maybe_init_dist()
     clean_up_mosaic()
     config = set_seeds(config, is_distributed=global_destroy_dist)
@@ -68,44 +104,45 @@ def train(config: DictConfig) -> None:
     if dist.get_global_rank() == 0:
         print(config)
 
+    # Configure activation checkpointing if specified
     if "activation_memory_budget" in config:
-        # activation checkpointing
         functorch_config.activation_memory_budget = config.activation_memory_budget
 
+    # Initialize loggers
     logger: List[LoggerDestination] = []
     if "logger" in config:
-        for log, lg_conf in config.logger.items():
+        for log_name, lg_conf in config.logger.items():
             if "_target_" in lg_conf:
                 print(f"Instantiating logger <{lg_conf._target_}>")
-                if log == "wandb":
+                if log_name == "wandb":
                     container = OmegaConf.to_container(config, resolve=True, throw_on_missing=True)
-                    # use _partial_ so it doesn't try to init everything
                     wandb_logger = hydra.utils.instantiate(lg_conf, _partial_=True)
                     logger.append(wandb_logger(init_kwargs={"config": container}))
                 else:
                     logger.append(hydra.utils.instantiate(lg_conf))
 
+    # Instantiate model
     model: ComposerModel = hydra.utils.instantiate(config.model)
 
-    # Build list of algorithms BEFORE optimizer creation
-    # This allows algorithms to add modules to the pipeline via add_new_pipeline_modules()
+    # Build algorithms before optimizer creation
+    # This allows algorithms to add modules to the pipeline before optimization
     algorithms: List[Algorithm] = []
     if config.get("algorithms", None) is not None:
-        for ag_name, ag_conf in config.algorithms.items():
+        for _, ag_conf in config.algorithms.items():
             if "_target_" in ag_conf:
                 print(f"Instantiating algorithm <{ag_conf._target_}>")
                 algorithms.append(hydra.utils.instantiate(ag_conf))
 
-    # Call add_new_pipeline_modules() for algorithms that have it
-    # This adds modules to pipeline before optimizer creation
+    # Allow algorithms to register new modules before optimizer creation
     for algorithm in algorithms:
-        if hasattr(algorithm, 'add_new_pipeline_modules'):
+        if hasattr(algorithm, "add_new_pipeline_modules"):
             algorithm.add_new_pipeline_modules(model)
 
-    # NOW create optimizer - will include any modules added by algorithms
+    # Create optimizer (includes any modules added by algorithms)
     optimiser_config = OmegaConf.to_container(config.optimizer)
     optimizer = create_optimizer(model, optimiser_config)
 
+    # Create dataloaders
     train_dataloader: Union[Iterable[Any], DataSpec, Dict[str, Any]] = hydra.utils.instantiate(
         config.dataset.train_dataset,
         batch_size=config.global_batch_size // dist.get_world_size(),
@@ -116,34 +153,22 @@ def train(config: DictConfig) -> None:
         batch_size=config.device_eval_microbatch_size,
     )
 
-    # Build list of callbacks to pass to trainer
+    # Build callbacks
     callbacks: List[Callback] = []
-
     if "callbacks" in config:
         for _, call_conf in config.callbacks.items():
             if call_conf and "_target_" in call_conf:
-                print(f"Instantiating callbacks <{call_conf._target_}>")
+                print(f"Instantiating callback <{call_conf._target_}>")
                 callbacks.append(hydra.utils.instantiate(call_conf))
 
+    # Create learning rate scheduler
     scheduler = hydra.utils.instantiate(config.scheduler) if "scheduler" in config else None
 
-    # Implementing a 0-second sleep as a temporary workaround for an NCCL race condition issue,
-    # which can cause unexpected behavior in distributed training scenarios. This delay helps in
-    # avoiding the race condition until a permanent fix is applied. For detailed context and
-    # ongoing discussions about this problem, refer to the PyTorch GitHub issue:
-    # https://github.com/pytorch/pytorch/issues/119196
-    # works by default, may need to increase if we see issues, tbc
-    # nccl_sleep = config.get("nccl_sleep", 0)
-    # print(
-    #     f" > NCCL: initiating a {nccl_sleep}-second sleep to mitigate an NCCL race condition issue. See PyTorch GitHub issue at https://github.com/pytorch/pytorch/issues/119196 for more details."
-    # )
-    # time.sleep(nccl_sleep)
-    # print(" > NCCL: wake-up now ")
-
-    # save config file in the checkpoint folder
+    # Save config file in the checkpoint folder
     with open(Path(config.trainer.save_folder) / "config.yaml", "w") as f:
         OmegaConf.save(config, f)
 
+    # Instantiate trainer
     trainer: Trainer = hydra.utils.instantiate(
         config.trainer,
         train_dataloader=train_dataloader,
@@ -157,34 +182,42 @@ def train(config: DictConfig) -> None:
     )
 
     def compile_model(module_name: str, **compile_kwargs: Any) -> None:
+        """Compile a model module using torch.compile.
+
+        Args:
+            module_name: Dot-separated path to the module (e.g., "denoiser" or "vae.encoder")
+            **compile_kwargs: Arguments to pass to torch.compile
+        """
         pipeline = trainer.state.model
         if isinstance(pipeline, DistributedDataParallel):
             pipeline = pipeline.module
 
-        model = pipeline
+        target_module = pipeline
         for attr in module_name.split("."):
-            model = getattr(model, attr)
+            target_module = getattr(target_module, attr)
 
-        if hasattr(model, "experts"):
-            for expert in model.experts:
+        # Handle MoE models with multiple experts
+        if hasattr(target_module, "experts"):
+            for expert in target_module.experts:
                 compile_model(expert, **compile_kwargs)
             return
 
-        compiled_model = torch.compile(model, **compile_kwargs)
-        model = compiled_model._orig_mod
-        model.forward = compiled_model.dynamo_ctx(model.forward)
+        compiled_model = torch.compile(target_module, **compile_kwargs)
+        target_module = compiled_model._orig_mod
+        target_module.forward = compiled_model.dynamo_ctx(target_module.forward)
 
-    # TODO: flexible torch compile config
-    if "compile_denoiser" in config and config.compile_denoiser is True:
+    # Apply model compilation if configured
+    if config.get("compile_denoiser", False):
         print("> Compiling the denoiser")
         compile_model("denoiser")
 
-    if "compile_vae" in config and config.compile_vae is True:
-        print("> Compiling the vae encoder")
+    if config.get("compile_vae", False):
+        print("> Compiling the VAE encoder")
         compile_model("vae.encoder", dynamic=True)
 
 
     def eval_and_then_train() -> None:
+        """Run initial evaluation (if configured) followed by training."""
         if config.get("eval_first", True):
             if hasattr(config.trainer, "eval_subset_num_batches"):
                 trainer.eval(subset_num_batches=config.trainer.eval_subset_num_batches)
@@ -193,9 +226,8 @@ def train(config: DictConfig) -> None:
 
         trainer.fit()
 
-        if (
-            global_destroy_dist
-        ):  # cleanup process group at end of training. (not sure if this is needed, but to be safe)
+        # Cleanup distributed process group
+        if global_destroy_dist:
             torch_dist.destroy_process_group()
 
     return eval_and_then_train()
@@ -203,7 +235,11 @@ def train(config: DictConfig) -> None:
 
 @hydra.main(version_base=None, config_path="yamls", config_name="PRX-JIT-1024")
 def main(config: DictConfig) -> None:
-    """Hydra wrapper for train."""
+    """Entry point for training with Hydra configuration management.
+
+    Args:
+        config: Hydra configuration automatically composed from config files
+    """
     return train(config)
 
 
