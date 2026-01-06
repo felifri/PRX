@@ -16,6 +16,9 @@ from streaming.base.world import World
 from .constants import BatchKeys
 from .dataset import ProcessedDataset, DEFAULT_DATA_AUG_TARGETS
 from .dataset import logger
+from .mds_patches import patch_mds_encoding
+
+patch_mds_encoding()
 
 def get_nb_samples_in_stream(index_file: str) -> int:
     total_samples = 0
