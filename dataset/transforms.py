@@ -2,9 +2,12 @@ import io
 import math
 from collections.abc import Iterable
 from functools import lru_cache
+from abc import ABC, abstractmethod
 from typing import Any, Optional, Sequence, Set, Tuple, TypeVar, Union
 
+import numpy as np
 import torch
+import torchvision.transforms.functional as TF
 import torchvision.transforms.v2 as transforms
 from PIL import Image
 
@@ -21,6 +24,32 @@ class ToTensorImage:
 
     def __call__(self, *img: Union[Image.Image, torch.Tensor]) -> torch.Tensor:
         return self.transform(*img)
+
+
+def image_to_tensor(image: Union[bytes, Image.Image, np.ndarray, torch.Tensor]) -> torch.Tensor:
+    """Convert various image formats to torch tensor.
+
+    Args:
+        image: Image as bytes, PIL Image, numpy array, or torch tensor
+
+    Returns:
+        Torch tensor in [0, 1] range with shape (C, H, W)
+    """
+    if isinstance(image, bytes):
+        image = Image.open(io.BytesIO(image))
+
+    if isinstance(image, Image.Image):
+        image = TF.pil_to_tensor(image).to(torch.float32).div(255.0)
+    elif isinstance(image, np.ndarray):
+        image = torch.tensor(image, dtype=torch.float32).div(255.0)
+        if image.dim() == 3:
+            image = image.permute(2, 0, 1).contiguous()
+        else:
+            image = image.unsqueeze(0)
+
+    # Clamp to overcome possible issues due to numerical errors in previous resizing steps
+    image = torch.clamp(image, 0.0, 1.0)
+    return image
 
 
 def build_image_size_list(
@@ -63,10 +92,12 @@ def build_image_size_list(
     return set(image_list)
 
 
-class ArAwareTransform(torch.nn.Module):
+class ArAwareTransform(torch.nn.Module, ABC):
     """
-    Create a list of aspect ratio and image size.
-    Should not be called.
+    Abstract base class for aspect-ratio-aware transforms.
+
+    Builds a mapping of aspect ratios to target image sizes. Subclasses must
+    implement __call__ to define the actual transform behavior.
     """
 
     def __init__(
@@ -106,8 +137,9 @@ class ArAwareTransform(torch.nn.Module):
             [f"{k} : {v}" for k, v in sorted(self.ar_to_size.items())]
         )
 
-    def __call__(self, _image: torch.Tensor) -> Any:
-        raise RuntimeError("This transform should not be called")
+    @abstractmethod
+    def __call__(self, image: torch.Tensor) -> Any:
+        pass
 
 
 def _get_shape(image: Union[torch.Tensor, Image.Image]) -> Tuple[int, int]:
@@ -115,8 +147,8 @@ def _get_shape(image: Union[torch.Tensor, Image.Image]) -> Tuple[int, int]:
     if isinstance(image, torch.Tensor):
         shape: Tuple[int, int] = image.shape[-2:]
         return shape
-    size: Tuple[int, int] = image.size[::-1]
-    return size
+    shape: Tuple[int, int] = image.size[::-1]
+    return shape
 
 
 class ArAwareCenterCrop(ArAwareTransform):
