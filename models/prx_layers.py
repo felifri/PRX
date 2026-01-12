@@ -141,7 +141,31 @@ class Modulation(nn.Module):
 
 class PRXBlock(nn.Module):
     """
-    A PRX block
+    PRX transformer block with text-conditioned attention.
+
+    Each block consists of:
+        1. Modulated attention where image tokens attend to both image and text tokens,
+           with RoPE positional encoding applied to image keys/queries
+        2. Gated MLP with SwiGLU-style activation
+
+    The block uses adaptive layer normalization (adaLN) where timestep embeddings
+    modulate the normalization via learned shift, scale, and gate parameters.
+
+    Args:
+        hidden_size: Dimension of the hidden representations.
+        num_heads: Number of attention heads.
+        mlp_ratio: Multiplier for the MLP hidden dimension relative to hidden_size.
+        qk_scale: Optional scale factor for attention. Defaults to 1/sqrt(head_dim).
+
+    Forward args:
+        img: Image token sequence of shape (B, L_img, hidden_size).
+        txt: Text conditioning tokens of shape (B, L_txt, hidden_size).
+        vec: Timestep embedding vector of shape (B, hidden_size) for modulation.
+        pe: Rotary positional embeddings for image tokens.
+        attention_mask: Optional mask for text tokens of shape (B, L_txt).
+
+    Returns:
+        Updated image token sequence of shape (B, L_img, hidden_size).
     """
 
     def __init__(
