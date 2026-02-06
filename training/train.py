@@ -196,11 +196,6 @@ def train(config: DictConfig) -> None:
         for attr in module_name.split("."):
             target_module = getattr(target_module, attr)
 
-        # Handle MoE models with multiple experts
-        if hasattr(target_module, "experts"):
-            for expert in target_module.experts:
-                compile_model(expert, **compile_kwargs)
-            return
 
         compiled_model = torch.compile(target_module, **compile_kwargs)
         target_module = compiled_model._orig_mod
