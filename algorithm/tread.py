@@ -69,7 +69,7 @@ class Tread(Algorithm):
     def apply(self, event: Event, state: State, logger: Logger) -> None:
         if event is Event.FIT_START:
             if self._blocks is None:
-                denoiser = self._resolve_attr_path(state.model, "denoiser")
+                denoiser = self._resolve_attr_path(state.model, path="denoiser")
                 self._denoiser = denoiser  # Store denoiser reference
                 self._blocks = self._get_blocks(denoiser)
                 depth = len(self._blocks)
@@ -109,11 +109,11 @@ class Tread(Algorithm):
         """Get the current process rank in distributed training, or 0 if not distributed."""
         try:
             import torch.distributed as dist
-
-            rank: int = dist.get_rank() if dist.is_initialized() else 0
-            return rank
-        except Exception:
+        except ImportError:
             return 0
+
+        rank: int = dist.get_rank() if dist.is_initialized() else 0
+        return rank
 
     def _compute_batch_seed(self, step_idx: int, rank: int) -> int:
         """Compute a deterministic per-batch seed for reproducible token sampling."""
