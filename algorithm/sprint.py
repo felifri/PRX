@@ -15,6 +15,34 @@ class SPRINT(Tread):
       - run middle blocks on visible tokens
       - restore full length with [MASK] for dropped tokens
       - fuse: Linear([dense || restored_deep]) -> hidden
+            img [B,N,C]         pe [B,1,N,...]
+             │                    │
+             ▼                    ▼
+        ┌─── pre-hook: gather ────────┐
+        │                             │
+   visible_tokens    dense_tokens  visible_pe
+   [B,Nv,C]         [B,N,C]          │
+        │               │            │
+        │               ▼            │
+        │            STASH           │
+        │               │            │
+        ▼               │            ▼
+   ┌────────────────────│──────────────┐
+   │ Blocks start → end │  (Nv tokens) │
+   └────────┬───────────│──────────────┘
+            │           │
+            ▼           ▼
+        ┌── post-hook: fuse ──────────┐
+        │                             │
+        │  deep = [MASK] × (B,N,C)    │
+        │  deep[visible_idx] = output │
+        │                             │
+        │  fused = Linear(            │
+        │    cat[dense, deep], dim=-1 │
+        │  )  # (B,N,2C) → (B,N,C)    │
+        └─────────┬───────────────────┘
+                  ▼
+           img [B,N,C]  (fused)
 
     """
 
