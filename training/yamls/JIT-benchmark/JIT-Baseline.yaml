@@ -14,6 +14,9 @@ project: PRX
 group: PRX-JIT-Benchmark-1024px
 name: Baseline
 nccl_sleep: 1
+caption_keys:
+  - [caption_llm_s, 1.]
+
 activation_memory_budget: 1
 image_size: 1024
 patch_size_pixels: 32
@@ -95,7 +98,7 @@ callbacks:
     guidance_scale: 3.5
     seed: 42
   generation_metrics:
-    _target_: callbacks.LogGenerationMetrics
+    _target_: callbacks.LogQualityMetrics
     frequency: 10_000ba
     guidance_scales: [3.5]
     seed: 42
