@@ -219,7 +219,7 @@ class LatentDiffusion(ComposerModel):
                 raise ValueError("Could not get the text embeddings masks from the batch.")
             text_embedding = batch[BatchKeys.PROMPT_EMBEDDING]
         elif BatchKeys.PROMPT in batch:
-            text_tower_output = self.encode_texts(batch[BatchKeys.prompt], device=self.denoiser_device)
+            text_tower_output = self.encode_texts(batch[BatchKeys.PROMPT], device=self.denoiser_device)
             text_mask = text_tower_output.get("attention_mask", None)
             text_embedding = text_tower_output["text_embed"]
         else:
@@ -443,9 +443,10 @@ class LatentDiffusion(ComposerModel):
 
     def get_batch_size_from_batch(self, batch: Dict[BatchKeys, Any]) -> int:
         """Return the batch size from a batch dict."""
-        if BatchKeys.IMAGE_LATENT in batch:
-            return len(batch[BatchKeys.IMAGE_LATENT])
-        return len(batch[BatchKeys.IMAGE])
+        for key in (BatchKeys.IMAGE_LATENT, BatchKeys.IMAGE, BatchKeys.PROMPT):
+            if key in batch:
+                return len(batch[key])
+        raise ValueError("Cannot infer batch size: batch contains none of IMAGE_LATENT, IMAGE, or PROMPT")
 
     # ============================================================
     # EVALUATION & METRICS
@@ -615,7 +616,7 @@ class LatentDiffusion(ComposerModel):
 
         # 3. Prepare denoiser inputs
         do_cfg = (guidance_scale > 1.0)
-        if BatchKeys.image_latent not in batch:
+        if BatchKeys.IMAGE_LATENT not in batch:
             batch[BatchKeys.IMAGE_LATENT] = latents
         denoiser_kwargs = self.get_denoiser_kwargs(batch=batch, do_cfg=do_cfg)
         denoiser_kwargs.pop(ModelInputs.IMAGE_LATENT)  # Will be updated per step
