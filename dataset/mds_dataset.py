@@ -343,10 +343,12 @@ class StreamingProcessedDataset(ProcessedDataset):
             self._dataloader_kwargs["prefetch_factor"] = prefetch_factor
 
         # Log summary
-        logger.info("--- Dataset Summary ---")
-        logger.info(f"Remote: {remote} | Local: {local}")
-        logger.info(f"Total size: {self.size} | This rank: {len(self)}")
-        logger.info(f"Sum of stream samples: {sum(self.samples_per_stream)}")
+        logger.info(
+            "--- Dataset Summary ---\n"
+            f"Remote: {remote} | Local: {local}\n"
+            f"Total size: {self.size} | This rank: {len(self)}\n"
+            f"Sum of stream samples: {sum(self.samples_per_stream)}"
+        )
         for i, (stream, n_samples) in enumerate(zip(self.streams, self.samples_per_stream)):
             location = stream.remote or stream.local
             index = getattr(stream, 'index_file', INDEX_FILE)
