@@ -17,7 +17,4 @@ __all__ = [
     "ProcessedDataset",
     "SampleProcessor",
     "StreamingProcessedDataset",
-    # Dataset builders
-    "DummyDataset",
-    "build_streaming_processed_dataloader",
 ]

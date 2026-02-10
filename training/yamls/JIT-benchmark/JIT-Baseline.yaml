@@ -14,6 +14,9 @@ project: PRX
 group: PRX-JIT-Benchmark-1024px
 name: Baseline
 nccl_sleep: 1
+caption_keys:
+  - [caption_llm_s, 1.]
+
 activation_memory_budget: 1
 image_size: 1024
 patch_size_pixels: 32
@@ -40,12 +43,12 @@ model:
   text_tower_config: ${diffusion_text_tower}
   vae_config: ${diffusion_vae}
 
+  # Scheduler config (from scheduler/*.yaml via pipeline defaults)
+  scheduler_config: ${diffusion_scheduler}
+
   # Pipeline settings
   input_size: ${image_size}
   p_drop_caption: 0.1
-  prediction_type: "x_prediction_flow_matching"
-  timestep_shift: 3.
-  num_train_timesteps: 1000
   # Validation
   val_metrics:
     - _target_: torchmetrics.MeanSquaredError
@@ -95,7 +98,7 @@ callbacks:
     guidance_scale: 3.5
     seed: 42
   generation_metrics:
-    _target_: callbacks.LogGenerationMetrics
+    _target_: callbacks.LogQualityMetrics
     frequency: 10_000ba
     guidance_scales: [3.5]
     seed: 42

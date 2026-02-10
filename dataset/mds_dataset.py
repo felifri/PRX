@@ -4,7 +4,6 @@ import warnings
 from typing import Any, List, Optional, Union, Sequence, Iterator, Tuple, Callable, Dict
 
 
-import torch
 from torch.utils.data import DataLoader
 
 from streaming.base.constant import TICK
@@ -13,6 +12,7 @@ from streaming import Stream, StreamingDataset
 from streaming.base.util import wait_for_file_to_exist
 from streaming.base.world import World
 
+from .constants import BatchKeys
 from .dataset import ProcessedDataset, DEFAULT_DATA_AUG_TARGETS
 from .dataset import logger
 from .mds_patches import patch_mds_encoding
@@ -231,7 +231,7 @@ class PatchedStream(Stream):
         return os.stat(filepath).st_size
 
 
-class StreamingProcessedDataset(ProcessedDataset):
+class StreamingProcessedDataset(StreamingDataset, ProcessedDataset):
     """Dataset that combines MosaicML streaming with sample processing.
 
     Args:
@@ -304,7 +304,8 @@ class StreamingProcessedDataset(ProcessedDataset):
                 )
             )
 
-        self._streaming_dataset = StreamingDataset(
+        StreamingDataset.__init__(
+            self,
             streams=streams,
             remote=None,
             local=None,
@@ -355,29 +356,21 @@ class StreamingProcessedDataset(ProcessedDataset):
             logger.info(f"  Stream {i}: {location}/{index} - {n_samples} samples")
         logger.info("-" * 23)
 
-    def __len__(self) -> int:
-        return len(self._streaming_dataset)
+    def __getitem__(self, index: int) -> Optional[Dict[BatchKeys, Any]]:
+        return ProcessedDataset.__getitem__(self, index)
 
     def _get_raw_item(self, index: int) -> Dict[str, Any]:
-        return self._streaming_dataset[index]
-
-    @property
-    def size(self) -> int:
-        return self._streaming_dataset.size
-
-    @property
-    def streams(self) -> Sequence[Stream]:
-        return self._streaming_dataset.streams
-
-    @property
-    def samples_per_stream(self) -> List[int]:
-        return self._streaming_dataset.samples_per_stream
+        return StreamingDataset.__getitem__(self, index)
 
     def _get_sampler(self, shuffle: bool) -> None:
-        """Streaming datasets handle sampling internally."""
+        # StreamingDataset is an IterableDataset — it handles shuffling/sharding
+        # internally, so DataLoader must not receive a sampler.
         return None
 
     def get_dataloader(self, batch_size: int, **kwargs: Any) -> DataLoader:
         """Create a DataLoader using stored kwargs from config."""
+        # StreamingDataset needs batch_size set before iteration for deterministic
+        # resumption and optimal worker partitioning.
+        self.batch_size = batch_size
         merged_kwargs = {**self._dataloader_kwargs, **kwargs}
         return super().get_dataloader(batch_size=batch_size, **merged_kwargs)

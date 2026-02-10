@@ -229,7 +229,7 @@ def train(config: DictConfig) -> None:
     return eval_and_then_train()
 
 
-@hydra.main(version_base=None, config_path="yamls", config_name="JIT-benchmark/JIT-debug")
+@hydra.main(version_base=None, config_path="yamls", config_name="PRX-JIT-1024")
 def main(config: DictConfig) -> None:
     """Entry point for training with Hydra configuration management.
 
