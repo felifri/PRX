@@ -1,0 +1,8 @@
+# @package _global_
+defaults:
+  - Flux-Baseline
+  - override /pipeline: prx_flux2
+  - override /vae@diffusion_vae: flux2
+  - _self_
+
+name: Flux2-VAE
