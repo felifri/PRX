@@ -1,0 +1,29 @@
+# @package dataset.train_dataset
+# Small debug training dataset
+# Same configuration as train_large for consistency
+
+_target_: dataset.StreamingProcessedDataset
+remote:
+  - s3://photoroom-datasets/t2i_1024_t5gemma2b/SYNTHETIC/
+  # not applicable
+local:
+  - /home/davidb/prx_os_prs/PRX/cache/train
+cache_limit: 50gb
+
+caption_keys: ${caption_keys}
+text_tower: ${diffusion_text_tower.preset_name}
+download_timeout: 7200
+drop_last: true
+shuffle: true
+batching_method: device_per_stream
+prefetch_factor: 2
+num_workers: 8
+persistent_workers: true
+pin_memory: true
+has_mask_text_latents: true
+transforms:
+  - _target_: dataset.transforms.ArAwareResize
+    default_image_size: ${image_size}
+    patch_size_pixels: ${patch_size_pixels}
+transforms_targets:
+  - image

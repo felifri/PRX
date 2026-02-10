@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import warnings
 from typing import Any, List, Optional, Union, Sequence, Iterator, Tuple, Callable, Dict
 
@@ -58,6 +59,7 @@ def get_stream_iterator(
     local: Union[str, List[str]],
     remote: Optional[Union[str, List[str]]],
     proportions: Optional[Union[float, List[float]]],
+    min_samples: int = 0,
 ) -> Iterator[Tuple[Optional[str], str, str, Optional[float]]]:
     """Get iterator over (remote, local, index_file, proportion) tuples."""
     if remote is None:
@@ -65,7 +67,7 @@ def get_stream_iterator(
 
     if proportions is not None:
         warnings.warn("Proportions are ignored when using remote datasets")
-    return get_remote_iterator(remote, local)
+    return get_remote_iterator(remote, local, min_samples=min_samples)
 
 
 def get_local_iterator(
@@ -105,9 +107,85 @@ def get_local_iterator(
                 yield None, folder, INDEX_FILE, prop
 
 
+def get_remote_split_folders(
+    remote_path: str, file_name: str = INDEX_FILE, min_samples: int = 0,
+) -> List[str]:
+    """Get list of S3 subfolders containing the specified index file.
+
+    Uses `aws s3 ls` to discover subfolders under remote_path, then checks
+    which ones contain the index file.
+
+    Args:
+        remote_path: S3 URI (e.g. s3://bucket/prefix/)
+        file_name: Name of the index file to look for
+        min_samples: Minimum number of samples required to include a subfolder.
+            Subfolders with fewer samples are skipped with a warning.
+
+    Returns:
+        List of S3 URI subfolders containing the index file,
+        or [remote_path] if the index file exists at root level.
+    """
+    remote_path = remote_path.rstrip("/") + "/"
+
+    def s3_ls(path: str) -> List[str]:
+        result = subprocess.run(
+            ["aws", "s3", "ls", path],
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode != 0:
+            raise FileNotFoundError(f"Failed to list S3 path {path}: {result.stderr.strip()}")
+        return result.stdout.strip().splitlines()
+
+    def s3_get_sample_count(path: str) -> int:
+        """Read index.json from S3 and return total sample count."""
+        result = subprocess.run(
+            ["aws", "s3", "cp", path + file_name, "-"],
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode != 0:
+            return 0
+        index = json.loads(result.stdout)
+        return sum(shard["samples"] for shard in index["shards"])
+
+    lines = s3_ls(remote_path)
+
+    # Check if index file exists at root level
+    for line in lines:
+        if line.strip().endswith(file_name):
+            return [remote_path]
+
+    # Collect subfolders (lines like "                           PRE subfolder/")
+    sub_folders = []
+    for line in lines:
+        parts = line.strip().split()
+        if len(parts) == 2 and parts[0] == "PRE":
+            sub_folder = parts[1]  # e.g. "0.939/"
+            sub_path = remote_path + sub_folder
+            # Check if this subfolder has the index file
+            sub_lines = s3_ls(sub_path)
+            has_index = any(sl.strip().endswith(file_name) for sl in sub_lines)
+            if not has_index:
+                continue
+
+            # Filter by minimum sample count
+            if min_samples > 0:
+                count = s3_get_sample_count(sub_path)
+                if count < min_samples:
+                    logger.warning(
+                        f"Skipping stream {sub_path} with {count} samples "
+                        f"(minimum: {min_samples})"
+                    )
+                    continue
+
+            sub_folders.append(sub_path)
+
+    return sub_folders
+
+
 def get_remote_iterator(
     remote_paths: Union[str, List[str]],
-    local_paths: Union[str, List[str]]
+    local_paths: Union[str, List[str]],
+    min_samples: int = 0,
 ) -> Iterator[Tuple[str, str, str, None]]:
     """Iterate over remote dataset paths with local cache."""
     # Normalize to lists
@@ -136,7 +214,7 @@ def get_remote_iterator(
 
     # Iterate over pairs
     for remote_path, local_path in zip(remote_paths, local_paths):
-        remote_folders = get_split_folders(remote_path, INDEX_FILE)
+        remote_folders = get_remote_split_folders(remote_path, INDEX_FILE, min_samples=min_samples)
         local_folders = [os.path.join(local_path, str(i)) for i in range(len(remote_folders))]
 
         for remote, local in zip(remote_folders, local_folders):
