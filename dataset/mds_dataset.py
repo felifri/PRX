@@ -4,8 +4,7 @@ import warnings
 from typing import Any, List, Optional, Union, Sequence, Iterator, Tuple, Callable, Dict
 
 
-import torch
-from torch.utils.data import DataLoader, default_collate
+from torch.utils.data import DataLoader
 
 from streaming.base.constant import TICK
 from streaming.base.format import Reader, reader_from_json
@@ -375,91 +374,3 @@ class StreamingProcessedDataset(StreamingDataset, ProcessedDataset):
         self.batch_size = batch_size
         merged_kwargs = {**self._dataloader_kwargs, **kwargs}
         return super().get_dataloader(batch_size=batch_size, **merged_kwargs)
-
-
-def build_streaming_processed_dataloader(
-    local: Union[str, List[str]],
-    batch_size: int,
-    remote: Optional[Union[str, List[str]]] = None,
-    caption_keys: Union[str, List[str], List[Tuple[str, float]]] = "caption",
-    text_tower: str = "t5gemma2b-256-bf16",
-    num_samples: Optional[int] = None,
-    cache_limit: str = "1tb",
-    predownload: Optional[int] = None,
-    download_retry: int = 2,
-    download_timeout: float = 120,
-    drop_last: bool = True,
-    shuffle: bool = False,
-    shuffle_seed: int = 9146,
-    num_canonical_nodes: Optional[int] = None,
-    proportions: Optional[Union[float, List[float]]] = None,
-    batching_method: str = "per_stream",
-    transforms: Optional[List[Callable]] = None,
-    transforms_targets: Union[List[str], str] = DEFAULT_DATA_AUG_TARGETS,
-    has_text_latents: bool = True,
-    has_mask_text_latents: bool = False,
-    **dataloader_kwargs: Any,
-) -> DataLoader:
-    """Build a streaming dataloader for processed datasets."""
-
-    # Create streams
-    streams = []
-    for r_path, l_path, index_file, proportion in get_stream_iterator(local, remote, proportions):
-        if proportion is not None and proportion <= 0:
-            raise ValueError(f"Proportion must be positive, got {proportion}")
-
-        streams.append(
-            PatchedStream(
-                remote=r_path,
-                local=l_path,
-                download_retry=download_retry,
-                download_timeout=download_timeout,
-                index_file=index_file,
-                proportion=proportion,
-            )
-        )
-
-    # Build dataset
-    dataset = StreamingProcessedDataset(
-        streams=streams,
-        caption_keys=caption_keys,
-        text_tower=text_tower,
-        split=None,
-        download_retry=download_retry,
-        download_timeout=download_timeout,
-        predownload=predownload,
-        cache_limit=cache_limit,
-        num_canonical_nodes=num_canonical_nodes,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        shuffle_seed=shuffle_seed,
-        batching_method=batching_method,
-        transforms=transforms,
-        transforms_targets=transforms_targets,
-        has_text_latents=has_text_latents,
-        has_mask_text_latents=has_mask_text_latents,
-    )
-
-    # Apply subset if needed
-    if num_samples is not None:
-        dataset = torch.utils.data.Subset(dataset, range(num_samples))
-
-    # Log summary
-    logger.info("--- Dataset Summary ---")
-    logger.info(f"Remote: {remote} | Local: {local}")
-    logger.info(f"Total size: {dataset.size} | This rank: {len(dataset)}")
-    logger.info(f"Sum of stream samples: {sum(dataset.samples_per_stream)}")
-    for i, (stream, n_samples) in enumerate(zip(dataset.streams, dataset.samples_per_stream)):
-        location = stream.remote or stream.local
-        index = getattr(stream, 'index_file', INDEX_FILE)
-        logger.info(f"  Stream {i}: {location}/{index} - {n_samples} samples")
-    logger.info("-" * 23)
-
-    return DataLoader(
-        dataset=dataset,
-        batch_size=batch_size,
-        sampler=None,
-        drop_last=drop_last,
-        collate_fn=lambda batch: default_collate([x for x in batch if x is not None]),
-        **dataloader_kwargs,
-    )

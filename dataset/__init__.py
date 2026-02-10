@@ -6,7 +6,7 @@ from dataset.dataset import (
     SampleProcessor,
     DummyDataset,
 )
-from dataset.mds_dataset import StreamingProcessedDataset, build_streaming_processed_dataloader
+from dataset.mds_dataset import StreamingProcessedDataset
 
 __all__ = [
     # Constants
@@ -17,7 +17,4 @@ __all__ = [
     "ProcessedDataset",
     "SampleProcessor",
     "StreamingProcessedDataset",
-    # Dataset builders
-    "DummyDataset",
-    "build_streaming_processed_dataloader",
 ]
