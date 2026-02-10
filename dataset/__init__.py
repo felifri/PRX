@@ -4,7 +4,6 @@ from dataset.dataset import (
     DummyDataset,
     ProcessedDataset,
     SampleProcessor,
-    DummyDataset,
 )
 from dataset.mds_dataset import StreamingProcessedDataset
 
