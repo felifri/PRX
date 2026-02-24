@@ -1,0 +1,9 @@
+# @package _global_
+defaults:
+  - Flux-Baseline
+  - override /dataset@dataset.train_dataset: train_small_captions
+  - _self_
+
+name: Flux-Baseline-Short-Captions
+trainer:
+  save_folder: checkpoints/Flux-Baseline-Short-Captions
