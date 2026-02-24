@@ -1,7 +1,10 @@
 import importlib
+import logging
 from typing import Any, Dict, List, Optional
 
 import torch
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_class(target: str):
@@ -38,14 +41,10 @@ def _collect_trainable(
     ]
 
     if parameter_name_filter or parameter_freeze_name_filter:
-        print("[optimizer] Trainable parameters:")
-        print("\n".join(f"  {n}" for n, _ in trainable))
+        logger.info("Trainable parameters:\n%s", "\n".join(f"  {n}" for n, _ in trainable))
 
-    print(f"[optimizer] -> Layers to train: {len(trainable)}")
-    print(
-        f"[optimizer] -> Parameters to train: "
-        f"{sum(p.numel() for _, p in trainable):_}"
-    )
+    logger.info("Layers to train: %d", len(trainable))
+    logger.info("Parameters to train: %s", f"{sum(p.numel() for _, p in trainable):_}")
     return trainable
 
 
@@ -73,6 +72,7 @@ def create_standard_optimizer(
     """
     trainable = _collect_trainable(model, parameter_name_filter, parameter_freeze_name_filter)
     opt_class = _resolve_class(optimizer_class)
+    # Drop None values so unset Hydra config fields fall back to the optimizer's own defaults
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
     return opt_class(params=[p for _, p in trainable], **kwargs)
 
@@ -84,12 +84,15 @@ def create_muon_optimizer(
     model: torch.nn.Module,
     muon_config: Dict[str, Any],
     adam_config: Dict[str, Any],
+    muon_name_filter: str = "blocks",
+    parameter_name_filter: Optional[List[str]] = None,
+    parameter_freeze_name_filter: Optional[List[str]] = None,
     **_kwargs: Any,
 ) -> torch.optim.Optimizer:
     """Create a ``muon_fsdp2.Muon`` optimizer with param group splitting.
 
     Splits trainable parameters into two groups:
-    - **Muon group**: 2-D weight matrices inside ``blocks`` → Newton-Schulz.
+    - **Muon group**: 2-D weight matrices matching *muon_name_filter* → Newton-Schulz.
     - **Adam group**: everything else → Adam.
 
     Args:
@@ -98,27 +101,33 @@ def create_muon_optimizer(
             (lr, momentum, nesterov, ns_steps, …).
         adam_config: Hyperparameters for the Adam fallback group
             (lr, betas, eps, …).
+        muon_name_filter: Substring that must appear in a parameter's name
+            for it to be assigned to the Muon group (default ``"blocks"``).
+        parameter_name_filter: If set, only train parameters whose names
+            contain at least one of these substrings.
+        parameter_freeze_name_filter: If set, freeze parameters whose names
+            contain any of these substrings.
     """
     from muon_fsdp2 import Muon
 
-    trainable = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
+    trainable = _collect_trainable(model, parameter_name_filter, parameter_freeze_name_filter)
 
     muon_params: list[torch.nn.Parameter] = []
     adam_params: list[torch.nn.Parameter] = []
 
     for name, param in trainable:
-        if param.ndim == 2 and "blocks" in name:
+        if param.ndim == 2 and muon_name_filter in name:
             muon_params.append(param)
         else:
             adam_params.append(param)
 
-    print(
-        f"[muon] Hidden weights (Muon): {len(muon_params)} params, "
-        f"{sum(p.numel() for p in muon_params):_} elements"
+    logger.info(
+        "Hidden weights (Muon): %d params, %s elements",
+        len(muon_params), f"{sum(p.numel() for p in muon_params):_}",
     )
-    print(
-        f"[muon] Other params (Adam): {len(adam_params)} params, "
-        f"{sum(p.numel() for p in adam_params):_} elements"
+    logger.info(
+        "Other params (Adam): %d params, %s elements",
+        len(adam_params), f"{sum(p.numel() for p in adam_params):_}",
     )
 
     muon_cfg = {k: v for k, v in muon_config.items() if v is not None}
