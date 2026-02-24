@@ -42,7 +42,6 @@ class ForwardOutput(TypedDict, total=False):
     prediction: torch.Tensor
     target: torch.Tensor
     timesteps: torch.Tensor
-    noised_latents: torch.Tensor
     generated_images: Dict[float, torch.Tensor]  # Only present in eval_forward
 
 
@@ -348,7 +347,6 @@ class LatentDiffusion(ComposerModel):
             "prediction": prediction.contiguous(),
             "target": target,
             "timesteps": self.sampled_timesteps,
-            "noised_latents": noised_latents,
         }
     # from "Back to Basics: Let Denoising Generative Models Denoise"
     # https://arxiv.org/abs/2511.13720   
