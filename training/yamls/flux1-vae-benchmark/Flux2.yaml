@@ -6,3 +6,5 @@ defaults:
   - _self_
 
 name: Flux2-VAE
+trainer:
+  save_folder: checkpoints/Flux2-VAE

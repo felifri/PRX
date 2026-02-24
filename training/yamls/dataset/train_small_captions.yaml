@@ -1,8 +1,8 @@
 # @package dataset.train_dataset
 # Small debug training dataset
-# Same configuration as train_large for consistency
+# Same configuration as train_small but with moondream captions
 
-_target_: dataset.build_streaming_processed_dataloader
+_target_: dataset.StreamingProcessedDataset
 remote:
   # not applicable
 local:
