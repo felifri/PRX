@@ -9,7 +9,7 @@ algorithms:
   pdino:
     _target_: algorithm.perceptual_dino.PerceptualDINO
     pdino_weight: 0.01
-    encoder: dinov2_vitb14_reg  # or dinov3_vitl16
+    encoder: dinov2_vitb14_reg  # or dinov2_vitl14_reg, dinov3_vitl16
     t_threshold: 1
     resize_resolution: 224
 trainer:

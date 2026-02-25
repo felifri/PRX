@@ -6,6 +6,7 @@ raw x0 prediction and the ground-truth clean latents.
 Loss: L_P-DINO = (1/|P|) * sum_{p in P} (1 - cos(f^p_DINO(x0_pred), f^p_DINO(x0_gt)))
 """
 
+import logging
 from typing import Any, Dict, Optional
 
 import torch
@@ -14,12 +15,15 @@ import torchvision
 from composer.core import Algorithm, Event, State
 from composer.loggers import Logger
 
+logger = logging.getLogger(__name__)
+
 IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
 
 SUPPORTED_MODELS = {
     "dinov2_vitb14_reg": ("facebookresearch/dinov2", "dinov2_vitb14_reg", 14),
     "dinov2_vitl14_reg": ("facebookresearch/dinov2", "dinov2_vitl14_reg", 14),
+    "dinov3_vitl16": ("facebookresearch/dinov3", "dinov3_vitl16", 16),
 }
 
 
@@ -38,7 +42,7 @@ class PDINOEncoder(torch.nn.Module):
 
     def forward(self, img: torch.Tensor) -> torch.Tensor:
         # Inputs come from x0 prediction/target in [-1, 1]. DINO expects ImageNet-normalized [0, 1].
-        img = ((img + 1.0) / 2.0).clamp_(0.0, 1.0)
+        img = ((img + 1.0) / 2.0).clamp(0.0, 1.0)
         img = torchvision.transforms.functional.normalize(img, mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD)
         return self.model.forward_features(img)["x_norm_patchtokens"]
 
@@ -90,7 +94,7 @@ class PerceptualDINO(Algorithm):
         model.pdino_encoder = self.encoder
         self._modules_added = True
         compiled_str = " (compiled)" if self.compile_encoder else ""
-        print(f" > P-DINO: Created frozen {self.encoder_name} encoder{compiled_str} (weight={self.pdino_weight})")
+        logger.info(f"P-DINO: Created frozen {self.encoder_name} encoder{compiled_str} (weight={self.pdino_weight})")
 
     def match(self, event: Event, state: State) -> bool:
         return event == Event.INIT
@@ -120,7 +124,7 @@ class PerceptualDINO(Algorithm):
         model.denoiser.register_forward_hook(hook_fn)
 
         # Wrap loss
-        self._wrap_loss_method(state, model)
+        self._wrap_loss_method(state)
 
         logger.log_hyperparameters(
             {
@@ -131,10 +135,11 @@ class PerceptualDINO(Algorithm):
                 "pdino/crop_size": self.crop_size,
             }
         )
-        print(" > P-DINO: Registered denoiser hook and wrapped loss()")
+        logger.info("P-DINO: Registered denoiser hook and wrapped loss()")
 
-    def _wrap_loss_method(self, state: State, model: torch.nn.Module) -> None:
+    def _wrap_loss_method(self, state: State) -> None:
         original_loss_fn = state.model.loss
+        composer_model = state.model
         encoder = self.encoder
         pdino_weight = self.pdino_weight
         t_threshold = self.t_threshold
@@ -151,6 +156,9 @@ class PerceptualDINO(Algorithm):
             mask = (t < t_threshold).float()
 
             x0_pred = algo._stashed_x0_pred  # raw denoiser output (x0 in x-pred mode)
+            algo._stashed_x0_pred = None  # release reference
+            if x0_pred is None:
+                return base_loss
 
             # Recover x0_gt from v-space target: x0 = noised_latents - t * v
             t_expanded = t.view(-1, 1, 1, 1).clamp(min=0.05)
@@ -188,7 +196,7 @@ class PerceptualDINO(Algorithm):
             # Apply per-sample mask
             mask_count = mask.sum().clamp(min=1)
             pdino_val = (pdino_per_sample * mask).sum() / mask_count
-            model.logger.log_metrics({"loss/train/pdino": pdino_val.detach().cpu()})
+            composer_model.logger.log_metrics({"loss/train/pdino": pdino_val.detach().cpu()})
 
             return base_loss + pdino_weight * pdino_val
 
