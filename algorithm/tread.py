@@ -5,7 +5,6 @@ import torch
 from composer.core import Algorithm, Event, State
 from composer.loggers import Logger
 from torch import Tensor, nn
-from tqdm.auto import tqdm
 
 
 class Tread(Algorithm):
@@ -85,8 +84,9 @@ class Tread(Algorithm):
         self._denoiser_hook_handle: Optional[Any] = None
         self._repa_loss: Optional[nn.Module] = None
         self._repa_hook_handle: Optional[Any] = None
-        # Auto-CFG state
+        # Self-guidance state
         self._original_generate: Optional[Callable[..., Any]] = None
+        self._guidance_ctx: Optional[Any] = None
 
     def match(self, event: Event, state: State) -> bool:
         if event in (Event.FIT_START, Event.FIT_END):
@@ -499,7 +499,7 @@ class Tread(Algorithm):
                 return [out_full, *extra]
 
     # ============================================================
-    # AUTO-CFG: Token-routing as guidance during inference
+    # Self Guidance: Token-routing as guidance during inference
     # ============================================================
     #
     #   Instead of classical CFG (null-prompt vs real-prompt), use TREAD's
@@ -559,100 +559,55 @@ class Tread(Algorithm):
         """Set a deterministic seed for routing during inference."""
         self._step_seed = self._compute_batch_seed(seed, self._get_rank())
 
-    def _wrap_generate_for_self_guidance(self, state: State) -> None:
-        """Replace ``state.model.generate`` with an auto-CFG version at EVAL_START."""
-        from pipeline.pipeline import ModelInputs
+    def enable(self) -> None:
+        """Enable token routing."""
+        self._enabled = True
 
+    def disable(self) -> None:
+        """Disable token routing."""
+        self._enabled = False
+
+    def _make_self_guidance_step(self, denoiser: Any) -> Callable:
+        """Build a per-step guidance callable for use with ``Pipeline.generate``."""
+        actual_denoiser = getattr(denoiser, "model", denoiser)
+        ctx = self.self_guidance_context(actual_denoiser)
+        routing = ctx.__enter__()
+        self._guidance_ctx = ctx  # prevent GC, cleaned up in _unwrap
+
+        def step_fn(
+            denoiser: Any, latent_input: Tensor, timestep: Tensor,
+            denoiser_kwargs: Dict, guidance_scale: float,
+        ) -> Tensor:
+            routing.disable()
+            full_output = denoiser(image_latent=latent_input, timestep=timestep, **denoiser_kwargs)
+            routing.enable()
+            routed_output = denoiser(image_latent=latent_input, timestep=timestep, **denoiser_kwargs)
+            return routed_output + guidance_scale * (full_output - routed_output)
+
+        return step_fn
+
+    def _wrap_generate_for_self_guidance(self, state: State) -> None:
+        """Replace ``state.model.generate`` with a thin wrapper that injects ``guidance_func``."""
         model = state.model
         self._original_generate = model.generate
         algo = self
-        original_generate = self._original_generate
+        original = self._original_generate
 
-        @torch.no_grad()
-        def self_guidance_generate(
-            batch: Dict,
-            image_size: Any,
-            num_inference_steps: Any = 50,
-            guidance_scale: float = 7.0,
-            seed: Any = None,
-            progress_bar: bool = False,
-            init_latents: Any = None,
-            denoiser: Any = None,
-            decode_latents: bool = True,
-            **kwargs: Any,
-        ) -> Tensor:
-            # No guidance requested → fall back to original (single pass, no CFG)
-            if guidance_scale <= 1.0:
-                return original_generate(
-                    batch=batch, image_size=image_size,
-                    num_inference_steps=num_inference_steps,
-                    guidance_scale=guidance_scale, seed=seed,
-                    progress_bar=progress_bar, init_latents=init_latents,
-                    denoiser=denoiser, decode_latents=decode_latents, **kwargs,
-                )
+        denoiser = model.ema_denoiser if model.ema_denoiser.is_active else model.denoiser
+        step_fn = algo._make_self_guidance_step(denoiser)
 
-            # ── 1. Setup (mirrors pipeline.generate) ──────────────────
-            device = model.vae.device
-            denoiser = denoiser or (
-                model.ema_denoiser if model.ema_denoiser.is_active else model.denoiser
-            )
-            batch_size = model.get_batch_size_from_batch(batch)
-            latents = model._initialize_latents(batch_size, image_size, init_latents, seed, device)
-
-            # ── 2. Prepare denoiser kwargs (NO CFG batch — same prompt for both passes)
-            from dataset.constants import BatchKeys
-
-            if BatchKeys.IMAGE_LATENT not in batch:
-                batch[BatchKeys.IMAGE_LATENT] = latents
-            denoiser_kwargs = model.get_denoiser_kwargs(batch=batch, do_cfg=False)
-            denoiser_kwargs.pop(ModelInputs.IMAGE_LATENT)
-
-            # ── 3. Setup timesteps ────────────────────────────────────
-            if hasattr(denoiser, "set_timesteps"):
-                denoiser.set_timesteps(num_inference_steps, model.inference_scheduler)
-            else:
-                model.inference_scheduler.set_timesteps(num_inference_steps)
-            latents = latents * model.inference_scheduler.init_noise_sigma
-
-            # ── 4. Resolve actual denoiser for hook registration ──────
-            # EMAModel wraps the real denoiser in .model
-            actual_denoiser = getattr(denoiser, "model", denoiser)
-
-            # ── 5. Deterministic seed for routing ─────────────────────
+        def wrapped(*, seed: Any = None, **kwargs: Any) -> Tensor:
             if seed is not None:
                 algo.set_inference_seed(seed if isinstance(seed, int) else seed[0])
+            return original(seed=seed, guidance_func=step_fn, **kwargs)
 
-            # ── 6. Denoising loop with auto-CFG ──────────────────────
-            with algo.self_guidance_context(actual_denoiser) as routing:
-                for t in tqdm(model.inference_scheduler.timesteps, disable=not progress_bar):
-                    latent_input = model.inference_scheduler.scale_model_input(latents, t)
-                    ts = t.repeat(batch_size).to(
-                        device=model.denoiser_device, dtype=model.denoiser_dtype
-                    )
-
-                    # Full pass (all tokens)
-                    routing._enabled = False
-                    full_output = denoiser(
-                        image_latent=latent_input, timestep=ts, **denoiser_kwargs
-                    )
-
-                    # Routed pass (token-dropped)
-                    routing._enabled = True
-                    routed_output = denoiser(
-                        image_latent=latent_input, timestep=ts, **denoiser_kwargs
-                    )
-
-                    # Auto-CFG guidance:  routed + scale × (full − routed)
-                    model_output = routed_output + guidance_scale * (full_output - routed_output)
-                    latents = model.inference_scheduler.step(model_output, t, latents, generator=None)
-
-            # ── 7. Decode ─────────────────────────────────────────────
-            return model.latent_to_image(latents).detach() if decode_latents else latents
-
-        model.generate = self_guidance_generate  # type: ignore[assignment]
+        model.generate = wrapped  # type: ignore[assignment]
 
     def _unwrap_generate_for_self_guidance(self, state: State) -> None:
         """Restore original ``model.generate`` at EVAL_END."""
         if self._original_generate is not None:
             state.model.generate = self._original_generate  # type: ignore[assignment]
             self._original_generate = None
+        if self._guidance_ctx is not None:
+            self._guidance_ctx.__exit__(None, None, None)
+            self._guidance_ctx = None
