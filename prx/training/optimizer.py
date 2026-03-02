@@ -133,7 +133,7 @@ def create_muon_optimizer(
     muon_cfg = {k: v for k, v in muon_config.items() if v is not None}
     adam_cfg = {k: v for k, v in adam_config.items() if v is not None}
 
-    if "betas" in adam_cfg and isinstance(adam_cfg["betas"], list):
+    if "betas" in adam_cfg and not isinstance(adam_cfg["betas"], tuple):
         adam_cfg["betas"] = tuple(adam_cfg["betas"])
 
     param_groups = [
