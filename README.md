@@ -47,6 +47,8 @@ Training is configured with [Hydra](https://hydra.cc/) YAML files. See [`configs
 composer -m prx.training.train --config-path=configs/yamls hydra/launcher=basic
 ```
 
+## Data
+We will post tomorrow a script to convert datasets into the MDS format used by PRX and exemplify how to use it to train a model on a your dataset.
 
 
 ## License
