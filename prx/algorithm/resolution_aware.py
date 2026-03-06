@@ -40,9 +40,12 @@ class ResolutionEmbedder(nn.Module):
         else:
             raise ValueError(f"Unknown mode: {mode!r}, expected 'vec' or 'token'")
 
-    def forward(self, height: Tensor, width: Tensor) -> Tensor:
+    def forward(self, height: Tensor, width: Tensor, dtype: torch.dtype | None = None) -> Tensor:
         h_emb = timestep_embedding(height, dim=128, max_period=self.max_period, time_factor=1.0)
         w_emb = timestep_embedding(width, dim=128, max_period=self.max_period, time_factor=1.0)
+        if dtype is not None:
+            h_emb = h_emb.to(dtype)
+            w_emb = w_emb.to(dtype)
         if self.mode == "vec":
             return self.mlp(torch.cat([h_emb, w_emb], dim=-1))  # [B, hidden_size]
         else:  # token
@@ -139,7 +142,7 @@ class ResolutionAware(Algorithm):
                 device = hook_state["device"]
                 h = torch.full((B,), H, device=device, dtype=torch.float32)
                 w = torch.full((B,), W, device=device, dtype=torch.float32)
-                res_emb = embedder(h, w).to(output.dtype)
+                res_emb = embedder(h, w, dtype=output.dtype)
                 return output + res_emb
 
             denoiser.time_in.register_forward_hook(time_in_post_hook)
@@ -162,7 +165,7 @@ class ResolutionAware(Algorithm):
 
                 h = torch.full((B,), H, device=device, dtype=torch.float32)
                 w = torch.full((B,), W, device=device, dtype=torch.float32)
-                res_tokens = embedder(h, w).to(prompt_embeds.dtype)  # [B, 2, hidden_size]
+                res_tokens = embedder(h, w, dtype=prompt_embeds.dtype)  # [B, 2, hidden_size]
 
                 # Prepend resolution tokens to prompt_embeds
                 prompt_embeds = torch.cat([res_tokens, prompt_embeds], dim=1)
