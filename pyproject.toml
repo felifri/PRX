@@ -42,8 +42,9 @@ dependencies = [
 [project.optional-dependencies]
 streaming = ["mosaicml-streaming"]
 lpips = ["lpips"]
+rewards = ["imscore"]
 dev = ["pytest", "pytest-mock"]
-all = ["prx[streaming,lpips,dev]"]
+all = ["prx[streaming,lpips,rewards,dev]"]
 
 [project.urls]
 Repository = "https://github.com/Photoroom/prx"
@@ -55,6 +56,9 @@ markers = [
     "gpu: tests requiring CUDA GPU",
 ]
 testpaths = ["tests"]
+
+[tool.uv]
+override-dependencies = ["pytest>=7.3"]
 
 [build-system]
 requires = ["hatchling"]
