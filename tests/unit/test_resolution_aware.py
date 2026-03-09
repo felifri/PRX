@@ -1,9 +1,10 @@
-"""Tests for ResolutionAware algorithm — TDD red phase.
+"""Tests for ResolutionAware algorithm.
 
 Tests ResolutionEmbedder (nn.Module) and ResolutionAware (Algorithm)
 for injecting resolution conditioning into the denoiser.
 """
 
+import copy
 from unittest.mock import MagicMock
 
 import pytest
@@ -189,16 +190,10 @@ class TestResolutionAwareHooks:
 
         # Apply algorithm hooks
         algo = ResolutionAware(mode="vec")
-        # Simulate add_new_pipeline_modules: attach embedder
         model = MagicMock()
         model.denoiser = tiny_denoiser
-        model.denoiser.hidden_size = tiny_denoiser.hidden_size
         algo.add_new_pipeline_modules(model)
-
-        # Retrieve the embedder that was attached
-        embedder = model.resolution_embedder
-        algo.resolution_embedder = embedder
-        algo._register_hooks(tiny_denoiser)
+        algo._register_hooks_on_denoiser(tiny_denoiser)
 
         with torch.no_grad():
             hooked = tiny_denoiser(
@@ -217,12 +212,8 @@ class TestResolutionAwareHooks:
         algo = ResolutionAware(mode="token")
         model = MagicMock()
         model.denoiser = tiny_denoiser
-        model.denoiser.hidden_size = tiny_denoiser.hidden_size
         algo.add_new_pipeline_modules(model)
-
-        embedder = model.resolution_embedder
-        algo.resolution_embedder = embedder
-        algo._register_hooks(tiny_denoiser)
+        algo._register_hooks_on_denoiser(tiny_denoiser)
 
         B, H, W, seq_len = 2, 8, 8, 4
         image_latent = torch.randn(B, 4, H, W)
@@ -271,12 +262,11 @@ class TestResolutionAwareIntegration:
         algo = ResolutionAware(mode="vec")
         model = MagicMock()
         model.denoiser = tiny_denoiser
-        model.denoiser.hidden_size = tiny_denoiser.hidden_size
         algo.add_new_pipeline_modules(model)
-        assert hasattr(model, "resolution_embedder"), (
-            "add_new_pipeline_modules should set model.resolution_embedder"
+        assert hasattr(tiny_denoiser, "resolution_embedder"), (
+            "add_new_pipeline_modules should set denoiser.resolution_embedder"
         )
-        assert isinstance(model.resolution_embedder, ResolutionEmbedder)
+        assert isinstance(tiny_denoiser.resolution_embedder, ResolutionEmbedder)
 
     def test_embedder_params_in_model_parameters(self, tiny_denoiser):
         """When attached to a real nn.Module, embedder params should be in model.parameters()."""
@@ -290,10 +280,11 @@ class TestResolutionAwareIntegration:
                 "Embedder parameters should be discoverable via model.parameters()"
             )
 
-    def test_match_returns_true_only_for_init(self):
+    def test_match_returns_true_for_init_and_fit_start(self):
         algo = ResolutionAware(mode="vec")
         state = MagicMock(spec=State)
         assert algo.match(Event.INIT, state) is True
+        assert algo.match(Event.FIT_START, state) is True
         assert algo.match(Event.BATCH_START, state) is False
         assert algo.match(Event.BATCH_END, state) is False
         assert algo.match(Event.EPOCH_START, state) is False
@@ -302,8 +293,7 @@ class TestResolutionAwareIntegration:
         """Full forward pass with vec hooks registered should not raise."""
         algo = ResolutionAware(mode="vec")
         algo.add_new_pipeline_modules(tiny_denoiser)
-        algo.resolution_embedder = tiny_denoiser.resolution_embedder
-        algo._register_hooks(tiny_denoiser)
+        algo._register_hooks_on_denoiser(tiny_denoiser)
 
         B, H, W, seq_len = 2, 8, 8, 4
         out = tiny_denoiser(
@@ -319,8 +309,7 @@ class TestResolutionAwareIntegration:
         """Full forward pass with token hooks registered should not raise."""
         algo = ResolutionAware(mode="token")
         algo.add_new_pipeline_modules(tiny_denoiser)
-        algo.resolution_embedder = tiny_denoiser.resolution_embedder
-        algo._register_hooks(tiny_denoiser)
+        algo._register_hooks_on_denoiser(tiny_denoiser)
 
         B, H, W, seq_len = 2, 8, 8, 4
         out = tiny_denoiser(
@@ -331,3 +320,101 @@ class TestResolutionAwareIntegration:
         )
         assert out.shape == (B, 4, H, W)
         assert not torch.isnan(out).any()
+
+
+# ---------------------------------------------------------------------------
+# 5. EMA interaction tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+class TestResolutionAwareEMA:
+    """Verify that EMA denoiser copies get resolution hooks."""
+
+    def _make_inputs(self, B=2, H=8, W=8, seq_len=4):
+        return dict(
+            image_latent=torch.randn(B, 4, H, W),
+            timestep=torch.rand(B),
+            prompt_embeds=torch.randn(B, seq_len, 32),
+            prompt_attention_mask=torch.ones(B, seq_len),
+        )
+
+    def test_deepcopy_includes_embedder(self, tiny_denoiser):
+        """EMA's deepcopy of the denoiser should include the resolution_embedder."""
+        algo = ResolutionAware(mode="vec")
+        algo.add_new_pipeline_modules(tiny_denoiser)
+
+        ema_copy = copy.deepcopy(tiny_denoiser)
+        assert hasattr(ema_copy, "resolution_embedder"), (
+            "deepcopy should preserve resolution_embedder on denoiser"
+        )
+        assert isinstance(ema_copy.resolution_embedder, ResolutionEmbedder)
+        # Weights should be independent copies
+        for p_orig, p_copy in zip(
+            tiny_denoiser.resolution_embedder.parameters(),
+            ema_copy.resolution_embedder.parameters(),
+        ):
+            assert p_orig.data_ptr() != p_copy.data_ptr()
+
+    def test_ema_copy_with_hooks_produces_valid_output(self, tiny_denoiser):
+        """EMA denoiser with hooks registered should produce non-noise output."""
+        torch.manual_seed(42)
+        algo = ResolutionAware(mode="vec")
+        algo.add_new_pipeline_modules(tiny_denoiser)
+
+        # Simulate EMA lifecycle: deepcopy, then register hooks on both
+        ema_denoiser = copy.deepcopy(tiny_denoiser).eval().requires_grad_(False)
+        algo._register_hooks_on_denoiser(tiny_denoiser)
+        algo._register_hooks_on_denoiser(ema_denoiser)
+
+        inputs = self._make_inputs()
+        with torch.no_grad():
+            out_train = tiny_denoiser(**inputs)
+            out_ema = ema_denoiser(**inputs)
+
+        # Both should be valid (not NaN/Inf)
+        assert not torch.isnan(out_ema).any()
+        assert not torch.isinf(out_ema).any()
+        # With same weights, outputs should match
+        assert torch.allclose(out_train, out_ema, atol=1e-5), (
+            "EMA denoiser with same weights and hooks should match training denoiser"
+        )
+
+    def test_ema_copy_without_hooks_differs(self, tiny_denoiser):
+        """EMA denoiser WITHOUT hooks produces different output (the bug scenario)."""
+        torch.manual_seed(42)
+        algo = ResolutionAware(mode="vec")
+        algo.add_new_pipeline_modules(tiny_denoiser)
+
+        ema_denoiser = copy.deepcopy(tiny_denoiser).eval().requires_grad_(False)
+        # Only register hooks on training denoiser, NOT on ema
+        algo._register_hooks_on_denoiser(tiny_denoiser)
+
+        inputs = self._make_inputs()
+        with torch.no_grad():
+            out_train = tiny_denoiser(**inputs)
+            out_ema = ema_denoiser(**inputs)
+
+        # Without hooks, EMA output should differ (missing resolution conditioning)
+        assert not torch.allclose(out_train, out_ema, atol=1e-5), (
+            "EMA denoiser without resolution hooks should produce different output"
+        )
+
+    @pytest.mark.parametrize("mode", ["vec", "token"])
+    def test_hooks_on_both_denoisers(self, tiny_denoiser, mode):
+        """Both training and EMA denoisers should work with hooks for both modes."""
+        torch.manual_seed(42)
+        algo = ResolutionAware(mode=mode)
+        algo.add_new_pipeline_modules(tiny_denoiser)
+
+        ema_denoiser = copy.deepcopy(tiny_denoiser).eval().requires_grad_(False)
+        algo._register_hooks_on_denoiser(tiny_denoiser)
+        algo._register_hooks_on_denoiser(ema_denoiser)
+
+        inputs = self._make_inputs()
+        with torch.no_grad():
+            out_train = tiny_denoiser(**inputs)
+            out_ema = ema_denoiser(**inputs)
+
+        assert out_train.shape == out_ema.shape
+        assert not torch.isnan(out_ema).any()
+        assert torch.allclose(out_train, out_ema, atol=1e-5)

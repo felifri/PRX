@@ -68,62 +68,70 @@ class ResolutionAware(Algorithm):
         super().__init__()
         self.mode = mode
         self.max_period = max_period
-        self.resolution_embedder: ResolutionEmbedder | None = None
         self._modules_added = False
-        self._hooks_registered = False
-        # Mutable state captured by hooks
+        # Mutable state captured by hooks (shared — only one denoiser runs at a time)
         self._hook_state: dict[str, Any] = {}
 
     def add_new_pipeline_modules(self, model: nn.Module) -> None:
-        """Attach ResolutionEmbedder to the model before optimizer creation."""
+        """Attach ResolutionEmbedder to the denoiser before optimizer creation.
+
+        Attaching to the denoiser (not the pipeline) ensures that EMA's deepcopy
+        of the denoiser includes the embedder, and compute_ema averages its weights.
+        """
         if self._modules_added:
             log.info(" > ResolutionAware: Modules already added, skipping")
             return
         denoiser = model.denoiser if hasattr(model, "denoiser") else model
         hidden_size = denoiser.hidden_size
         embedder = ResolutionEmbedder(hidden_size, self.mode, self.max_period)
-        model.resolution_embedder = embedder
+        denoiser.resolution_embedder = embedder
         num_params = sum(p.numel() for p in embedder.parameters())
         log.info(f" > ResolutionAware: Attached embedder (mode={self.mode}, params={num_params:,})")
         self._modules_added = True
 
+    def _unwrap_model(self, state: State) -> torch.nn.Module:
+        return state.model.module if hasattr(state.model, "module") else state.model
+
     def match(self, event: Event, state: State) -> bool:
-        return event == Event.INIT
+        return event in (Event.INIT, Event.FIT_START)
 
     def apply(self, event: Event, state: State, logger: Logger) -> None:
-        # Resolve denoiser (handle DDP/FSDP wrapping)
-        if hasattr(state.model, "module"):
-            model_unwrapped = state.model.module
-        else:
-            model_unwrapped = state.model
+        model_unwrapped = self._unwrap_model(state)
 
-        if not hasattr(model_unwrapped, "resolution_embedder"):
-            raise RuntimeError(
-                "ResolutionAware module not found on model. "
-                "Did you call add_new_pipeline_modules() in train.py before creating the optimizer?"
-            )
+        if event == Event.INIT:
+            denoiser = model_unwrapped.denoiser
+            if not hasattr(denoiser, "resolution_embedder"):
+                raise RuntimeError(
+                    "ResolutionEmbedder not found on denoiser. "
+                    "Did you call add_new_pipeline_modules() in train.py before creating the optimizer?"
+                )
+            self._register_hooks_on_denoiser(denoiser)
+            logger.log_hyperparameters({
+                "resolution_aware/mode": self.mode,
+                "resolution_aware/max_period": self.max_period,
+            })
+            log.info(f" > ResolutionAware: Registered hooks (mode={self.mode})")
 
-        denoiser = model_unwrapped.denoiser
-        self.resolution_embedder = model_unwrapped.resolution_embedder
-        self._register_hooks(denoiser)
+        if event == Event.FIT_START:
+            # Register hooks on EMA denoiser if the EMA algorithm initialized it.
+            # By FIT_START all INIT events have fired, so ema.model exists iff EMA is active.
+            ema = getattr(model_unwrapped, "ema_denoiser", None)
+            if ema is not None and hasattr(ema, "model"):
+                self._register_hooks_on_denoiser(ema.model)
+                log.info(" > ResolutionAware: Also registered hooks on EMA denoiser")
 
-        logger.log_hyperparameters({
-            "resolution_aware/mode": self.mode,
-            "resolution_aware/max_period": self.max_period,
-        })
-        log.info(f" > ResolutionAware: Registered hooks (mode={self.mode})")
+    def _register_hooks_on_denoiser(self, denoiser: nn.Module) -> None:
+        """Register forward hooks on a denoiser instance.
 
-    def _register_hooks(self, denoiser: nn.Module) -> None:
-        """Register forward hooks on the denoiser."""
-        if self._hooks_registered:
-            return
-        self._hooks_registered = True
+        Called once per denoiser (training + EMA). Each denoiser uses its own
+        resolution_embedder (attached in add_new_pipeline_modules / deepcopy).
+        The hook_state dict is shared since only one denoiser runs at a time.
+        """
         hook_state = self._hook_state
-        embedder = self.resolution_embedder
+        embedder = denoiser.resolution_embedder
 
         # Pre-hook on denoiser.forward: capture (B, H, W, device) from image_latent
         def denoiser_pre_hook(module: nn.Module, args: tuple, kwargs: dict) -> None:
-            # image_latent may be positional or keyword
             image_latent = args[0] if args else kwargs["image_latent"]
             B, _C, H, W = image_latent.shape
             hook_state["B"] = B
@@ -134,7 +142,6 @@ class ResolutionAware(Algorithm):
         denoiser.register_forward_pre_hook(denoiser_pre_hook, with_kwargs=True)
 
         if self.mode == "vec":
-            # Post-hook on denoiser.time_in: add resolution embedding to vec
             def time_in_post_hook(module: nn.Module, input: Any, output: Tensor) -> Tensor:
                 B = hook_state["B"]
                 H = hook_state["H"]
@@ -148,7 +155,6 @@ class ResolutionAware(Algorithm):
             denoiser.time_in.register_forward_hook(time_in_post_hook)
 
         elif self.mode == "token":
-            # Wrap forward_transformers to prepend resolution tokens
             original_forward_transformers = denoiser.forward_transformers
 
             def wrapped_forward_transformers(
@@ -165,12 +171,10 @@ class ResolutionAware(Algorithm):
 
                 h = torch.full((B,), H, device=device, dtype=torch.float32)
                 w = torch.full((B,), W, device=device, dtype=torch.float32)
-                res_tokens = embedder(h, w, dtype=prompt_embeds.dtype)  # [B, 2, hidden_size]
+                res_tokens = embedder(h, w, dtype=prompt_embeds.dtype)
 
-                # Prepend resolution tokens to prompt_embeds
                 prompt_embeds = torch.cat([res_tokens, prompt_embeds], dim=1)
 
-                # Extend attention_mask if present
                 if attention_mask is not None:
                     mask_prefix = torch.ones(B, 2, device=device, dtype=attention_mask.dtype)
                     attention_mask = torch.cat([mask_prefix, attention_mask], dim=1)
