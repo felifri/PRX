@@ -1,14 +1,14 @@
 # @package dataset.train_dataset
-# Small debug and benchmark training dataset
+# Dose-response C1: 5% unsafe, full scale
+# safe_full (7.85M) + unsafe_c1 (397K oversampled) = ~8.24M total
 
 _target_: prx.dataset.StreamingProcessedDataset
 local:
-  - /mnt/data/datasets/gen_ai/t2i_1024_t5gemma2b/SYNTHETIC
+  - /checkpoint/dream/felixfriedrich/diffusion_safety/dose_response/mds/safe_full
+  - /checkpoint/dream/felixfriedrich/diffusion_safety/dose_response/mds/unsafe_c1
 
 caption_keys:
-  - [caption_llm_s, 1.]
-  # - [caption, 1.]
-  # - [caption_alt, 1.]
+  - [prompt, 1.]
 text_tower: ${diffusion_text_tower.preset_name}
 prompt_max_tokens: 256
 cache_limit: 8tb
@@ -20,7 +20,8 @@ prefetch_factor: 2
 num_workers: 8
 persistent_workers: true
 pin_memory: true
-has_mask_text_latents: true
+has_mask_text_latents: false
+has_text_latents: false
 transforms:
   - _target_: prx.dataset.transforms.ArAwareResize
     default_image_size: ${image_size}
