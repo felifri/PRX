@@ -2,7 +2,7 @@ from typing import NamedTuple
 
 import ftfy
 import torch
-from transformers import AutoTokenizer, GemmaTokenizerFast, Qwen3VLForConditionalGeneration, T5EncoderModel, T5GemmaModel
+from transformers import AutoTokenizer, CLIPTextModel, GemmaTokenizerFast, Qwen3VLForConditionalGeneration, T5EncoderModel, T5GemmaModel
 from transformers.modeling_utils import ModuleUtilsMixin
 
 import html
@@ -252,6 +252,8 @@ class TextTower(torch.nn.Module, ModuleUtilsMixin):
     ) -> tuple[AutoTokenizer | GemmaTokenizerFast, torch.nn.Module | None]:
         if "qwen" in model_config.lower():
             return self._create_qwen_vl_model(model_config, prompt_max_tokens)
+        if "clip" in model_config.lower():
+            return self._create_clip_model(model_config, prompt_max_tokens)
         return self._create_t5gemma_model(model_config, prompt_max_tokens)
 
     def _create_t5gemma_model(
@@ -262,6 +264,36 @@ class TextTower(torch.nn.Module, ModuleUtilsMixin):
         if self.only_tokenizer:
             return tokenizer, None
         text_encoder = T5GemmaModel.from_pretrained(model_config, torch_dtype=self.torch_dtype).encoder
+        return tokenizer, text_encoder
+
+    def _create_clip_model(
+        self, model_config: str, prompt_max_tokens: int
+    ) -> tuple[AutoTokenizer, torch.nn.Module | None]:
+        # SafeCLIP (aimagelab/safeclip_vit-l_14) doesn't ship a tokenizer;
+        # it uses the same architecture as openai/clip-vit-large-patch14.
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(model_config)
+        except Exception:
+            tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-large-patch14")
+        tokenizer.prompt_max_tokens = prompt_max_tokens
+        if self.only_tokenizer:
+            return tokenizer, None
+        # Try loading as CLIPTextModel (works for standard CLIP like openai/clip-vit-large-patch14).
+        # SafeCLIP is distributed as a full CLIPModel (vision+text);
+        # in that case, wrap the text_model in CLIPTextModel for a consistent interface.
+        try:
+            text_encoder = CLIPTextModel.from_pretrained(model_config, torch_dtype=self.torch_dtype)
+        except Exception:
+            from transformers import CLIPModel
+
+            full_model = CLIPModel.from_pretrained(model_config, torch_dtype=self.torch_dtype)
+            text_encoder = full_model.text_model
+            # Wrap in CLIPTextModel so forward() returns BaseModelOutputWithPooling
+            # (with last_hidden_state), matching CLIPTextModel's interface.
+            wrapper = CLIPTextModel(full_model.config.text_config)
+            wrapper.text_model = text_encoder
+            text_encoder = wrapper
+            del full_model
         return tokenizer, text_encoder
 
     def _create_qwen_vl_model(
