@@ -1,10 +1,11 @@
 # @package _global_
 
-# PRX JIT 32 pipeline configuration
-# PRX Small (1.24B) + T5-Gemma 2B + Identity VAE (no compression)
+# PRX JIT 32 + CLIP pipeline configuration
+# PRX Small (1.24B) + CLIP ViT-L/14 + Identity VAE (no compression)
 
 defaults:
   - prx_standard
   - override /model@diffusion_model: prx_jit_32_small
+  - override /text_tower@diffusion_text_tower: clip_vitl14_77_bf16
   - override /vae@diffusion_vae: identity
   - override /scheduler@diffusion_scheduler: euler_x_prediction_shifted

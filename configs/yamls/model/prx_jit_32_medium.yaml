@@ -1,0 +1,8 @@
+# PRX Medium JIT-32 Configuration (~3.8B params, pixel-space)
+# Pixel-space variant of medium model for dose-response scaling experiment
+defaults:
+  - prx_medium
+
+in_channels: 3
+patch_size: 32
+bottleneck_size: 256

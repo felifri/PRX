@@ -1,0 +1,10 @@
+# @package _global_
+
+# PRX Base (7.3B) + T5-Gemma 2B + FLUX VAE (16 channels, 8x compression)
+# For dose-response scaling experiment with latent-space diffusion
+# Uses x_prediction scheduler (required by LPIPS algorithm)
+
+defaults:
+  - prx_standard
+  - override /model@diffusion_model: prx_base
+  - override /scheduler@diffusion_scheduler: euler_x_prediction
