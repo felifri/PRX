@@ -1,0 +1,10 @@
+# @package _global_
+defaults:
+  - Flux-Baseline
+  - override /optimizer: muon
+  - _self_
+
+name: Muon_fsdp
+
+trainer:
+  save_folder: checkpoints/Flux-Muon

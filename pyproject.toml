@@ -1,0 +1,61 @@
+[project]
+name = "prx"
+version = "0.1.0"
+description = "PRX – image generation training framework"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [
+    { name = "Photoroom" },
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "torch>=2.4",
+    "torchvision",
+    "transformers>=4.52",
+    "accelerate",
+    "diffusers",
+    "torchmetrics[image]",
+    "mosaicml",
+    "wandb>=0.19",
+    "numpy",
+    "tqdm",
+    "einops",
+    "omegaconf",
+    "hydra-core",
+    "ftfy",
+    "Pillow",
+    "pyyaml",
+    "muon-fsdp2",
+]
+
+[project.optional-dependencies]
+streaming = ["mosaicml-streaming"]
+lpips = ["lpips"]
+dev = ["pytest", "pytest-mock"]
+all = ["prx[streaming,lpips,dev]"]
+
+[project.urls]
+Repository = "https://github.com/Photoroom/prx"
+
+[tool.pytest.ini_options]
+markers = [
+    "unit: fast unit tests (no GPU, no model downloads)",
+    "integration: integration tests (may download models)",
+    "gpu: tests requiring CUDA GPU",
+]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

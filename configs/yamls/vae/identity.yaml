@@ -1,0 +1,5 @@
+# Identity VAE (passthrough, no encoding)
+model_name: identity
+model_class: IdentityVAE
+default_channels: 3
+torch_dtype: torch.bfloat16

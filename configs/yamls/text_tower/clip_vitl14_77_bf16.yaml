@@ -1,0 +1,11 @@
+# CLIP ViT-L/14 Text Tower (77 max length, bf16)
+# Standard CLIP text encoder — no safety mitigation
+preset_name: clip-vitl14-77-bf16
+model_name: openai/clip-vit-large-patch14
+prompt_max_tokens: 77
+use_attn_mask: true
+use_last_hidden_state: true
+only_tokenizer: false
+torch_dtype: torch.bfloat16
+unpadded: false
+skip_text_cleaning: true

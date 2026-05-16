@@ -1,0 +1,9 @@
+# @package _global_
+defaults:
+  - Flux-Baseline
+  - _self_
+
+name: BF16
+denoiser_dtype: torch.bfloat16
+trainer:
+  save_folder: checkpoints/BF16

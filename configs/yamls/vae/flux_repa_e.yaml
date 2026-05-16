@@ -1,0 +1,5 @@
+# REPA-E end-to-end FLUX VAE (16 channels, 8x compression)
+model_name: REPA-E/e2e-flux-vae
+model_class: AutoencoderKL
+default_channels: 16
+torch_dtype: torch.bfloat16

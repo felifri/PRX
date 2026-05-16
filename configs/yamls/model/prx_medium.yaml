@@ -1,0 +1,10 @@
+# PRX Medium Configuration (~3.8B params)
+# Intermediate scale between Small (1.24B) and Base (7.3B)
+# hidden_size=2560, depth=24, num_heads=20
+defaults:
+  - prx_base
+
+hidden_size: 2560
+depth: 24
+num_heads: 20
+axes_dim: [64, 64]
